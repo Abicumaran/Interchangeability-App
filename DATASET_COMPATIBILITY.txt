@@ -1,0 +1,26 @@
+Validated against both supplied workbook structures on 2026-07-15:
+
+1. Matrix_for analysis_for Abi_14-07-2026.xlsx
+   - sheet: combined_results_flags_18
+   - 80 rows, 74 columns
+   - Type labels: Mc- and MK2
+   - 19 exact donor labels, including D04/D04b and D07/D07b as separate donors
+   - all 12 selected analytes and all 12 Sysmex _ref columns detected
+
+2. combined_results_flags_18_with global flags.xlsx
+   - sheet: combined_results_flags_18
+   - 73 rows, 65 columns
+   - Type labels: Mc- and MK2
+   - 18 donor labels
+   - all 12 selected analytes and all 12 Sysmex _ref columns detected
+
+The full analysis-core smoke test completed for all 12 analytes on both files with:
+- normal-range filtering
+- donor averaging and paired Mc-/MK2 analysis
+- raw percent BA
+- direct log ratio
+- leave-one-out median log recalibration
+- Sysmex absolute correction
+- Sysmex log-ratio correction
+- power estimates
+- SD-distance tables
