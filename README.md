@@ -2,6 +2,7 @@
 # Interchangeability App
 
 A Streamlit application for paired clinical-method interchangeability analysis.
+https://interchangeability-app.streamlit.app/
 
 ## Main analysis
 
