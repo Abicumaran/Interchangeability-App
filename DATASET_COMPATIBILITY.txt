@@ -1,0 +1,20 @@
+PROXIMA DATASET COMPATIBILITY
+
+Primary expected replicate-level structure:
+- batch_id
+- bloodSampleId ending in donor-specimen-replicate, for example D05-Mc-2
+- global_flag
+- MHS analyte columns
+- matched Sysmex columns ending in _ref
+- optional analyte flag columns ending in _flag
+
+The app also allows explicit donor, specimen-type and replicate columns and can
+synthesize the canonical bloodSampleId internally.
+
+Supported default analytes and MHS columns:
+RBC=RBC; WBC=WBC_2; NEUT=NEUT_2; LYMPH=LYMPH_2; MXD=MXD_2;
+PLT=PLT; MCV=MCV; RDW=RDW; MCH=MCH; MCHC=MCHC; HGB=HGB; HCT=HCT.
+
+All MHS/reference/flag columns are remappable in the app. Specimen labels are
+read from the uploaded file and may include Mc, Mc2, MK2, MK3, Dir, Tas, or
+other study labels.

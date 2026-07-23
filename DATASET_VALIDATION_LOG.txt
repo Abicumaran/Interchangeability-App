@@ -1,0 +1,16 @@
+VALIDATION LOG — PROXIMA FINAL APP
+
+1. analysis_core.py was generated from the final notebook code cells and retains
+   the two separate outlier branches.
+2. Default app-core execution was run on combined_results_flags_50 2.csv.
+3. Regression_Summary values matched the notebook-generated combined workbook.
+4. PROXIMA_BA_MAIN_PERCENT_NATIVE_SUMMARY.csv matched numerically and textually.
+5. Thirty-four common notebook/app PNG outputs had identical MD5 hashes in the
+   panel-only verification run.
+6. A second test using a two-analyte subset and custom Mc-versus-MK2 groups
+   completed successfully, confirming analyte and specimen-group flexibility.
+7. Python syntax compilation passed for app.py and analysis_core.py.
+
+Streamlit itself was not launched inside the build container because the
+container did not provide the Streamlit package index. requirements.txt contains
+the deployment dependency.
