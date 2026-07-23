@@ -86,12 +86,3 @@ Outlier removal and recalibration should be treated as sensitivity analyses unle
 
 Do not upload names, medical record numbers, dates of birth, or other direct identifiers. Use de-identified study IDs only.
 
-## Critical GitHub deployment note
-
-Do **not** upload `INTERCHANGEABILITY_APP_FINAL_GITHUB.zip` as one ZIP file and expect Streamlit to extract it. Unzip it first, then commit the individual files to the repository root. Streamlit Community Cloud copies repository files as-is and runs the selected entrypoint; it does not unpack arbitrary ZIP archives.
-
-Use `app.py` as the Streamlit **Main file path**.
-
-## Supplied dataset validation
-
-The app was smoke-tested against both supplied EP09/Mc-MK2 workbook structures. All 12 analytes completed paired donor averaging, raw BA, direct log ratio, leave-one-out median log recalibration, Sysmex absolute/log corrections, power estimates, and SD-distance calculations. See `DATASET_VALIDATION_LOG.txt` and `DATASET_COMPATIBILITY.txt`.
