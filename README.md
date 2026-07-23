@@ -3,6 +3,7 @@
 This Streamlit application is the app version of the final validated notebook
 `PROXIMA_Trueness_and_BlandAltman_v2.ipynb`.
 
+The App is available at: https://interchangeability-app.streamlit.app/
 
 ## Statistical pipeline
 
