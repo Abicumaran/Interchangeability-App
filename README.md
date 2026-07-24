@@ -1,11 +1,8 @@
-# PROXIMA Interchangeability App — fixed deployment package
-
-This package fixes the Streamlit Cloud import failure caused by deploying an
-`app.py` and `analysis_core.py` from different releases.
-
+# PROXIMA Interchangeability App 
+https://interchangeability-app.streamlit.app/
 ## Required repository files
 
-Keep these files in the same GitHub repository directory:
+Main Files:
 
 - `app.py`
 - `analysis_core.py`
