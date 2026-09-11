@@ -66,6 +66,13 @@ build_runtime_analytes = _analysis_core.build_runtime_analytes
 canonicalize_input_dataframe = _analysis_core.canonicalize_input_dataframe
 collect_output_files = _analysis_core.collect_output_files
 default_analyte_table = _analysis_core.default_analyte_table
+
+# User-facing analyte order mirrors the Short-Term app while preserving the
+# validated PROXIMA canonical analyte definitions and statistical engine.
+SHORT_TERM_ANALYTE_COLUMN_ORDER = [
+    "RBC", "WBC_2", "PLT", "HCT", "HGB", "MCV", "RDW", "MCH", "MCHC",
+    "NEUT_2", "LYMPH_2", "MXD_2", "PLT_3", "MCV_3", "RDW_3",
+]
 normalize_bool = _analysis_core.normalize_bool
 normalize_specimen_label = _analysis_core.normalize_specimen_label
 parse_blood_sample_id = _analysis_core.parse_blood_sample_id
@@ -490,20 +497,42 @@ if global_choice != "<no column>":
 
 st.header("3. Analytes, mappings, ranges, and acceptance criteria")
 defaults = default_analyte_table()
+
+# Reorder the supported canonical analytes by their MHS/source column so the
+# selector follows the same sequence as the Short-Term app. Extra model columns
+# (for example PLT_3) remain outside this selector unless they are part of the
+# validated PROXIMA core; this change is UI-only and does not alter the method.
+source_to_analyte = {str(row["MHS column"]): str(row["Analyte"]) for _, row in defaults.iterrows()}
+ordered_supported = [source_to_analyte[c] for c in SHORT_TERM_ANALYTE_COLUMN_ORDER if c in source_to_analyte]
+ordered_supported += [str(a) for a in DEFAULT_ANALYTE_CONFIG if str(a) not in ordered_supported]
+
 detected = []
-for _, row in defaults.iterrows():
+for analyte in ordered_supported:
+    row = defaults.loc[defaults["Analyte"].astype(str) == str(analyte)].iloc[0]
     if row["MHS column"] in columns and row["Reference column"] in columns:
-        detected.append(str(row["Analyte"]))
+        detected.append(str(analyte))
+
+def analyte_display_name(analyte):
+    row = defaults.loc[defaults["Analyte"].astype(str) == str(analyte)]
+    if row.empty:
+        return str(analyte)
+    return str(row.iloc[0]["MHS column"])
+
 selected_analytes = st.multiselect(
-    "Analytes to run",
-    options=list(DEFAULT_ANALYTE_CONFIG),
-    default=detected or list(DEFAULT_ANALYTE_CONFIG),
+    "Analyte columns to run",
+    options=ordered_supported,
+    default=detected or ordered_supported,
+    format_func=analyte_display_name,
+    help="Select exactly which analytes to run. Choices are displayed using the MHS analyte-column names and ordered like the Short-Term app.",
 )
 if not selected_analytes:
     st.warning("Select at least one analyte.")
     st.stop()
 
 config_df = defaults[defaults["Analyte"].isin(selected_analytes)].copy()
+_selected_order = {str(a): i for i, a in enumerate(selected_analytes)}
+config_df["__order"] = config_df["Analyte"].astype(str).map(_selected_order)
+config_df = config_df.sort_values("__order").drop(columns="__order").reset_index(drop=True)
 for index, row in config_df.iterrows():
     flag_name = str(row["Flag column"])
     if flag_name not in columns:
