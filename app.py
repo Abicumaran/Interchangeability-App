@@ -1032,21 +1032,9 @@ with plot_tab:
         else:
             chosen_plot = st.selectbox("Saved PNG", filtered_names, key="all_plot_selector")
             st.image(results["plots"][chosen_plot], caption=chosen_plot, use_container_width=True)
-            st.download_button(
-                "Download selected PNG",
-                data=results["plots"][chosen_plot],
-                file_name=Path(chosen_plot).name,
-                mime="image/png",
-            )
 
 with download_tab:
-    st.download_button(
-        "Download complete results ZIP",
-        data=results["zip"],
-        file_name="PROXIMA_COMBINED_RESULTS.zip",
-        mime="application/zip",
-        use_container_width=True,
-    )
+    st.caption("Single-file output: all tabular results and audit sheets are provided in the combined Excel workbook.")
     st.download_button(
         "Download combined Excel workbook",
         data=results["xlsx"],
@@ -1054,21 +1042,7 @@ with download_tab:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    st.download_button(
-        "Download main percent/native summary CSV",
-        data=results["summary_csv"],
-        file_name="PROXIMA_BA_MAIN_PERCENT_NATIVE_SUMMARY.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    st.download_button(
-        "Download canonicalized input used by the analysis",
-        data=results["canonical_csv"],
-        file_name="canonical_uploaded_input.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    with st.expander("Output inventory"):
+    with st.expander("Output inventory included in the analysis run"):
         st.code("\n".join(results["inventory"]))
 
 if st.button("Clear stored results"):
