@@ -1,5 +1,6 @@
 # PROXIMA Trueness + Bland–Altman — matched reference build
 
+https://interchangeability-app.streamlit.app/
 This is the matched V6.1 app/core reference used by the other app updates. Its statistical engine is unchanged.
 
 - Existing global-flag handling and locked trueness/Bland–Altman methods are preserved.
