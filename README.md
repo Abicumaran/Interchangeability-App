@@ -1,11 +1,16 @@
-# PROXIMA Trueness + Bland–Altman — matched reference build
+# PROXIMA Trueness + Bland–Altman — final automated single-output build
 
 https://interchangeability-app.streamlit.app/
-This is the matched V6.1 app/core reference used by the other app updates. Its statistical engine is unchanged.
 
-- Existing global-flag handling and locked trueness/Bland–Altman methods are preserved.
-- UI is simplified to one downloadable results file: the combined Excel workbook.
-- Plot previews remain visible in the app, but separate PNG/CSV/ZIP download buttons are removed to maintain the one-results-file workflow.
+This build keeps the validated trueness and Bland–Altman engine while simplifying the reportable workflow.
+
+- Select exactly which supported analytes to run, displayed in the same suggested MHS-column order as the Short-Term app.
+- Global-flag and analyte-specific flag exclusions are applied before reportable analysis and retained in dedicated audit sheets.
+- Validated replicate-level outlier handling is always enabled for the reportable run: trueness uses generalized ESD; Bland–Altman uses Shapiro-Wilk → Grubbs when normal or robust MAD when non-normal.
+- Trueness remains Huber regression with Pearson/Fisher-z reporting.
+- For paired-specimen Bland–Altman, the single reportable method is selected automatically as M11 (preferred signed Sysmex-reference-adjusted comparison). M02/M05 may be evaluated internally but are not exported as competing reportable outcomes.
+- For single-specimen MHS-versus-reference Bland–Altman, the reportable method is REF.
+- The only downloadable results file is one Excel workbook with: `Trueness Results`, `Bland-Altman Results`, `Outliers`, `global flag TRUE`, `analyte flag TRUE`.
 
 Run with:
 
