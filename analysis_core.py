@@ -1677,39 +1677,103 @@ def save_standard_bland_altman_plots(donor_values: pd.DataFrame, combined: pd.Da
 
 
 def export_combined_workbook(path: Path, regression_result: Mapping[str, object], ba_bundle: Mapping[str, object], criteria_df: pd.DataFrame) -> None:
-    path=Path(path)
-    with pd.ExcelWriter(path,engine="xlsxwriter") as writer:
-        wb=writer.book
-        header=wb.add_format({"bold":True,"font_color":"white","bg_color":"#1F4E78","border":1,"align":"center","valign":"vcenter","text_wrap":True})
-        pass_fmt=wb.add_format({"bg_color":"#D9EAD3","border":1}); fail_fmt=wb.add_format({"bg_color":"#F4CCCC","border":1}); warn_fmt=wb.add_format({"bg_color":"#FFF2CC","border":1})
-        reg_metrics=pd.concat([b["metrics"] for b in regression_result["groups"].values()],ignore_index=True) if regression_result.get("groups") else pd.DataFrame()
-        sheets={
-            "Regression_Summary":reg_metrics,
-            "BA_Combined_Context":ba_bundle["combined_context"],
-            "BA_Percent":ba_bundle["percent_results"],
-            "BA_Native":ba_bundle["native_results"],
-            "BA_Donor_Values":ba_bundle["donor_values"],
-            "BA_Donor_Means":ba_bundle["donor_means"],
-            "BA_Outlier_Audit":ba_bundle["outlier_audit"],
-            "BA_Removed_Outliers":ba_bundle["removed_outliers"],
-            "BA_AnalyteFlag_Excluded":ba_bundle["analyte_flag_exclusions"],
-            "Global_Exclusions":ba_bundle["global_exclusions"],
-            "Acceptance_Criteria":criteria_df,
-        }
-        for name,df in sheets.items():
-            df.to_excel(writer,sheet_name=name,index=False)
-            ws=writer.sheets[name]; ws.freeze_panes(1,0); ws.set_row(0,32,header); ws.autofilter(0,0,max(1,len(df)),max(0,len(df.columns)-1)); ws.set_column(0,max(0,len(df.columns)-1),18)
-            if name in {"BA_Combined_Context","BA_Percent"}:
-                for cname in [c for c in df.columns if c.endswith("CI") or c.endswith("LoA")]:
-                    col=df.columns.get_loc(cname)
-                    ws.conditional_format(1,col,max(1,len(df)),col,{"type":"text","criteria":"containing","value":"Pass","format":pass_fmt})
-                    ws.conditional_format(1,col,max(1,len(df)),col,{"type":"text","criteria":"containing","value":"Fail","format":fail_fmt})
+    """Write the single cleaned, reportable Excel workbook.
+
+    The statistical engine may calculate additional diagnostics internally, but
+    the workbook deliberately contains one reportable trueness result table,
+    one automatically selected Bland--Altman method (M11 for paired specimens,
+    REF for a single-specimen reference comparison), and the exclusion/outlier
+    audit tables needed for traceability.
+    """
+    path = Path(path)
+
+    reg_groups = regression_result.get("groups", {}) or {}
+    reg_metrics = pd.concat(
+        [bundle["metrics"].assign(regression_group=group_name) for group_name, bundle in reg_groups.items()],
+        ignore_index=True,
+    ) if reg_groups else pd.DataFrame()
+
+    # Automatically select the single reportable BA method. M11 is the preferred
+    # signed reference-adjusted paired comparison; REF is the direct matched
+    # Sysmex-reference comparison for a single specimen type.
+    ba_context = ba_bundle.get("combined_context", pd.DataFrame()).copy()
+    ba_enabled = bool(ba_bundle.get("ba_enabled", not ba_context.empty))
+    ba_mode = str(ba_bundle.get("ba_mode", "")).strip().lower()
+    selected_method = ""
+    if ba_enabled and not ba_context.empty and "method" in ba_context.columns:
+        methods = set(ba_context["method"].dropna().astype(str))
+        if ba_mode == "single_specimen_reference" and "REF" in methods:
+            selected_method = "REF"
+        elif "M11" in methods:
+            selected_method = "M11"
+        elif "REF" in methods:
+            selected_method = "REF"
+        elif methods:
+            selected_method = sorted(methods)[0]
+    ba_report = (
+        ba_context.loc[ba_context["method"].astype(str).eq(selected_method)].copy()
+        if selected_method and "method" in ba_context.columns
+        else pd.DataFrame(columns=ba_context.columns)
+    )
+    if not ba_report.empty:
+        ba_report.insert(0, "reportable_method_selected_automatically", True)
+
+    # Combine both validated outlier branches into one audit sheet while keeping
+    # source-specific fields. Empty branches are safe and preserve fixed tabs.
+    outlier_parts = []
+    for group_name, bundle in reg_groups.items():
+        frame = bundle.get("outliers", pd.DataFrame()).copy()
+        if not frame.empty:
+            frame.insert(0, "analysis_branch", "Trueness generalized ESD")
+            frame.insert(1, "regression_group", group_name)
+            outlier_parts.append(frame)
+    ba_removed = ba_bundle.get("removed_outliers", pd.DataFrame()).copy()
+    if not ba_removed.empty:
+        ba_removed.insert(0, "analysis_branch", "Bland-Altman Shapiro -> Grubbs/MAD")
+        outlier_parts.append(ba_removed)
+    outliers = pd.concat(outlier_parts, ignore_index=True, sort=False) if outlier_parts else pd.DataFrame()
+
+    global_exclusions = ba_bundle.get("global_exclusions", pd.DataFrame()).copy()
+    analyte_exclusions = ba_bundle.get("analyte_flag_exclusions", pd.DataFrame()).copy()
+
+    sheets = {
+        "Trueness Results": reg_metrics,
+        "Bland-Altman Results": ba_report,
+        "Outliers": outliers,
+        "global flag TRUE": global_exclusions,
+        "analyte flag TRUE": analyte_exclusions,
+    }
+
+    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+        wb = writer.book
+        header = wb.add_format({
+            "bold": True, "font_color": "white", "bg_color": "#1F4E78",
+            "border": 1, "align": "center", "valign": "vcenter", "text_wrap": True,
+        })
+        pass_fmt = wb.add_format({"bg_color": "#D9EAD3", "border": 1})
+        fail_fmt = wb.add_format({"bg_color": "#F4CCCC", "border": 1})
+        warn_fmt = wb.add_format({"bg_color": "#FFF2CC", "border": 1})
+
+        for name, df in sheets.items():
+            df.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            ws.freeze_panes(1, 0)
+            ws.set_row(0, 32, header)
+            if len(df.columns):
+                ws.autofilter(0, 0, max(1, len(df)), len(df.columns) - 1)
+                ws.set_column(0, len(df.columns) - 1, 18)
+            if name == "Bland-Altman Results" and not df.empty:
                 if "criteria_status" in df.columns:
-                    col=df.columns.get_loc("criteria_status"); ws.conditional_format(1,col,max(1,len(df)),col,{"type":"text","criteria":"containing","value":"UNVERIFIED","format":warn_fmt})
-        for group_name,bundle in regression_result.get("groups",{}).items():
-            short=re.sub(r"[^A-Za-z0-9]","",group_name)[:20]
-            for prefix,key in [("RegDonor_","donor_means"),("RegOutlier_","outliers"),("RegESD_","diagnostics"),("RegRepN_","replicate_counts")]:
-                df=bundle[key]; sname=(prefix+short)[:31]; df.to_excel(writer,sheet_name=sname,index=False); ws=writer.sheets[sname]; ws.freeze_panes(1,0); ws.set_row(0,28,header); ws.set_column(0,max(0,len(df.columns)-1),17)
+                    col = df.columns.get_loc("criteria_status")
+                    ws.conditional_format(1, col, max(1, len(df)), col, {
+                        "type": "text", "criteria": "containing", "value": "Pass", "format": pass_fmt,
+                    })
+                    ws.conditional_format(1, col, max(1, len(df)), col, {
+                        "type": "text", "criteria": "containing", "value": "Fail", "format": fail_fmt,
+                    })
+                    ws.conditional_format(1, col, max(1, len(df)), col, {
+                        "type": "text", "criteria": "containing", "value": "UNVERIFIED", "format": warn_fmt,
+                    })
 
 
 def run_ba_pipeline(

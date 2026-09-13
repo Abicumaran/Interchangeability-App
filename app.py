@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_BUILD = "PROXIMA V6.1 — matched core import fix"
+APP_BUILD = "PROXIMA V6.2 — automated single-report output"
 REQUIRED_CORE_API_VERSION = "2026-07-24-proxima-v6"
 
 st.set_page_config(
@@ -82,10 +82,9 @@ run_complete_notebook_pipeline = _analysis_core.run_complete_notebook_pipeline
 st.title("🧪 PROXIMA Trueness + Bland–Altman App")
 st.caption(f"Build: {APP_BUILD}")
 st.caption(
-    "Streamlit implementation of the final validated notebook: replicate-level "
-    "APT generalized-ESD trueness regression plus paired-specimen M02/M11/M05 "
-    "Bland–Altman analysis, native-unit context, acceptance screens, full audits, "
-    "Excel export, and all plot outputs."
+    "Streamlit implementation of the validated notebook with automatic replicate-level "
+    "outlier handling, Huber trueness regression, one automatically selected reportable "
+    "Bland–Altman method, and one cleaned Excel results workbook."
 )
 
 with st.expander("Method lock and interpretation", expanded=False):
@@ -93,7 +92,7 @@ with st.expander("Method lock and interpretation", expanded=False):
         """
 - **Trueness branch:** `global_flag == FALSE` → validated generalized ESD on raw linked replicate rows → analyte-specific removal → donor means → Huber regression → Pearson *r* with Fisher-z 95% CI.
 - **Bland–Altman branch:** `global_flag == FALSE` and analyte flags → residual normality by Shapiro–Wilk → manual Grubbs `Gcrit` if normal or MAD modified-Z if non-normal → maximum one linked replicate removed per analyte → donor means.
-- **Optional sensitivity run:** the user may disable both replicate-level outlier branches; all otherwise eligible rows are then retained before donor averaging, with this choice recorded in every audit/configuration output.
+- **Automatic outlier handling:** the validated replicate-level outlier branches are always enabled for the reportable run; trueness uses generalized ESD and Bland--Altman uses Shapiro--Wilk to route normal residuals to Grubbs and non-normal residuals to robust MAD.
 - **Donor parsing:** the app extracts the D-token, collection prefix, and optional explicit Donor column, then asks the user which identity rule to use. This prevents accidental merging when the same parsed token occurs under different prefixes or maps to labels such as `D03` and `D03b`.
 - **Bland–Altman is optional:** trueness regression runs independently. With one specimen type, the optional `REF` mode compares MHS directly with its matched Sysmex `_ref` value.
 - **M02:** direct signed MHS specimen-A versus specimen-B comparison.
@@ -591,18 +590,14 @@ n_huber_bootstraps = reg2.number_input(
     disabled=not run_huber_bootstrap,
 )
 
-ignore_outlier_removal = st.checkbox(
-    "Ignore replicate-level outlier removal (sensitivity run)",
-    value=False,
-    help=(
-        "Default OFF preserves the validated automatic ESD and Grubbs/MAD procedures. "
-        "Turn this ON only to retain every otherwise eligible replicate before donor averaging. "
-        "Global and analyte-specific flag exclusions still apply."
-    ),
+# Final reportable workflow: validated automatic outlier handling is always on.
+# This removes the user-facing sensitivity branch so the app produces one
+# deterministic, reportable outcome rather than multiple competing paths.
+apply_outlier_removal = True
+st.info(
+    "Automatic outlier handling is enabled for the reportable run: trueness uses validated generalized ESD; "
+    "Bland–Altman uses Shapiro–Wilk to select Grubbs for normal residuals or robust MAD for non-normal residuals."
 )
-apply_outlier_removal = not ignore_outlier_removal
-if ignore_outlier_removal:
-    st.warning("Sensitivity mode: replicate-level outlier removal is disabled; all otherwise eligible replicates will be retained.")
 
 with st.expander("Regression-plot label placement", expanded=False):
     st.caption(
@@ -802,17 +797,13 @@ if run_clicked:
             )
             if run_bland_altman:
                 if ba_mode == "paired_specimens":
-                    ba_status_text = "Running paired M02/M11/M05 Bland–Altman analyses"
+                    ba_status_text = "Running paired Bland–Altman analyses (M11 will be the single reportable method)"
                 else:
                     ba_status_text = "Running MHS-versus-Sysmex reference Bland–Altman analysis"
-                st.write(
-                    ba_status_text + ", outlier screening and bootstraps…"
-                    if apply_outlier_removal else
-                    ba_status_text + " and bootstraps with outlier removal disabled…"
-                )
+                st.write(ba_status_text + ", automatic outlier screening and bootstraps…")
             else:
                 st.write("Bland–Altman disabled; continuing with trueness regression only…")
-            st.write("Saving all plots, CSV audits, Excel sheets, and ZIP outputs…")
+            st.write("Saving the single cleaned Excel report plus internal plot/audit artifacts…")
             with tempfile.TemporaryDirectory(prefix="proxima_app_") as temp_dir:
                 pipeline_kwargs = {
                     "runtime_analytes": runtime_analytes,
@@ -927,6 +918,11 @@ if run_clicked:
                     "selected_analytes": list(runtime_analytes),
                     "criteria_confirmed": criteria_confirmed,
                     "apply_outlier_removal": apply_outlier_removal,
+                    "selected_ba_method": (
+                        "REF" if bool(result["ba"].get("ba_enabled", run_bland_altman))
+                        and str(result["ba"].get("ba_mode", ba_mode)) == "single_specimen_reference"
+                        else ("M11" if bool(result["ba"].get("ba_enabled", run_bland_altman)) else "")
+                    ),
                     "donor_identity_mode": donor_identity_mode,
                 }
             status.update(label="Analysis complete", state="complete", expanded=False)
@@ -953,9 +949,7 @@ if results.get("ba_enabled", False):
 else:
     summary5.metric("Bland–Altman", "Not run")
     summary6.metric("BA outliers removed", "—")
-st.caption(
-    "Outlier removal: " + ("enabled (validated default)" if results["apply_outlier_removal"] else "disabled by user for sensitivity analysis")
-)
+st.caption("Outlier removal: automatic validated path enabled for the single reportable analysis.")
 
 if results.get("ba_enabled", False) and not results["criteria_confirmed"]:
     st.warning("Acceptance results are provisional because the criteria-verification checkbox was not confirmed.")
@@ -995,18 +989,20 @@ with ba_tab:
         with st.expander("Acceptance criteria used"):
             st.dataframe(results["criteria"], use_container_width=True, hide_index=True)
     else:
+        method = results.get("selected_ba_method", "M11") or "M11"
         st.info(
-            "M11 is the preferred signed reference-adjusted option; M02 is the direct signed comparison; "
-            "M05 is magnitude-only sensitivity. Exact native values are calculated directly, while midpoint-scaled "
-            "unit values are contextual approximations."
+            "The reportable paired Bland–Altman outcome is selected automatically as M11, the preferred signed "
+            "Sysmex-reference-adjusted comparison. M02 and M05 may be evaluated internally as diagnostics but are "
+            "not presented as competing reportable outcomes."
         )
-        method = st.radio("Method", ["M11", "M02", "M05"], horizontal=True)
-        method_context = results["ba_context"][results["ba_context"]["method"] == method].copy()
+        method_context = results["ba_context"][results["ba_context"]["method"].astype(str).eq(method)].copy()
+        method_percent = results["ba_percent"][results["ba_percent"]["method"].astype(str).eq(method)].copy() if "method" in results["ba_percent"].columns else results["ba_percent"].copy()
+        method_native = results["ba_native"][results["ba_native"]["method"].astype(str).eq(method)].copy() if "method" in results["ba_native"].columns else results["ba_native"].copy()
         st.dataframe(pf_styler(method_context), use_container_width=True, hide_index=True)
-        with st.expander("Full percentage results"):
-            st.dataframe(pf_styler(results["ba_percent"]), use_container_width=True, hide_index=True)
-        with st.expander("Full exact native-unit results"):
-            st.dataframe(results["ba_native"], use_container_width=True, hide_index=True)
+        with st.expander("Selected-method percentage results"):
+            st.dataframe(pf_styler(method_percent), use_container_width=True, hide_index=True)
+        with st.expander("Selected-method exact native-unit results"):
+            st.dataframe(method_native, use_container_width=True, hide_index=True)
         with st.expander("Acceptance criteria used"):
             st.dataframe(results["criteria"], use_container_width=True, hide_index=True)
 
@@ -1042,20 +1038,27 @@ with plot_tab:
     if not plot_names:
         st.info("No plot files were generated.")
     else:
-        plot_categories = ["All", "Regression"]
+        # Show only reportable plot families. M02/M05 can still be calculated
+        # internally as method diagnostics, but they are not presented as
+        # competing user-facing results when M11 is the selected paired method.
+        plot_categories = ["Reportable results", "Regression"]
         if results.get("ba_enabled", False):
             if results.get("ba_mode") == "single_specimen_reference":
                 plot_categories.append("REF")
             else:
-                plot_categories.extend(["M02", "M11", "M05", "Donor profiles"])
+                plot_categories.append("M11")
         category = st.selectbox("Plot category", plot_categories)
-        filtered_names = plot_names
+        selected_method = "REF" if results.get("ba_mode") == "single_specimen_reference" else "M11"
+        reportable_names = [
+            name for name in plot_names
+            if "regression" in name.lower()
+            or (results.get("ba_enabled", False) and selected_method.lower() in name.lower() and "bland_altman" in name.lower())
+        ]
+        filtered_names = reportable_names
         if category == "Regression":
             filtered_names = [name for name in plot_names if "regression" in name.lower()]
-        elif category in {"M02", "M11", "M05", "REF"}:
+        elif category in {"M11", "REF"}:
             filtered_names = [name for name in plot_names if category.lower() in name.lower() and "bland_altman" in name.lower()]
-        elif category == "Donor profiles":
-            filtered_names = [name for name in plot_names if "donor_profiles" in name.lower()]
         if not filtered_names:
             st.info("No plots are available in this category.")
         else:
@@ -1063,7 +1066,7 @@ with plot_tab:
             st.image(results["plots"][chosen_plot], caption=chosen_plot, use_container_width=True)
 
 with download_tab:
-    st.caption("Single-file output: all tabular results and audit sheets are provided in the combined Excel workbook.")
+    st.caption("Single-file output: only the selected reportable results and required exclusion/outlier audits are included in the Excel workbook.")
     st.download_button(
         "Download combined Excel workbook",
         data=results["xlsx"],
@@ -1071,8 +1074,6 @@ with download_tab:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    with st.expander("Output inventory included in the analysis run"):
-        st.code("\n".join(results["inventory"]))
 
 if st.button("Clear stored results"):
     st.session_state.pop("proxima_final_results", None)
