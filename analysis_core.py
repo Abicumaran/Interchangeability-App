@@ -12,9 +12,10 @@ The two outlier branches remain deliberately separate:
 
 from __future__ import annotations
 
-CORE_API_VERSION = "2026-07-24-proxima-v6"
+CORE_API_VERSION = "2026-09-17-proxima-v6.3"
 
 import json
+import importlib.util
 import math
 import re
 from pathlib import Path
@@ -27,6 +28,17 @@ from scipy import stats
 from scipy.stats import pearsonr, t
 from sklearn.linear_model import HuberRegressor
 from sklearn.metrics import mean_squared_error, r2_score
+
+
+def _xlsxwriter_available() -> bool:
+    """Excel exports still work on an incompletely provisioned deployment.
+
+    XlsxWriter provides the formatted primary output.  The openpyxl fallback
+    preserves every analysis table and sheet when a cloud environment has not
+    yet installed the new requirements.txt; only formatting/embedded plots in
+    the *internal* regression workbook may be reduced.
+    """
+    return importlib.util.find_spec("xlsxwriter") is not None
 
 
 ANALYTES: dict[str, dict[str, object]] = {
@@ -913,6 +925,38 @@ def export_excel_xlsxwriter(output_path: str | Path, group_outputs: Mapping[str,
                             global_exclusions: pd.DataFrame, config_df: pd.DataFrame) -> None:
     """Create a portable Excel workbook in the same broad layout as 'for Abi.xlsx'."""
     output_path = Path(output_path)
+    if not _xlsxwriter_available():
+        # This is the supplementary/internal regression workbook; the five-tab
+        # reportable workbook has its own export below.  Do not let an optional
+        # Excel formatting engine abort a completed statistical calculation.
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            all_metrics = (pd.concat([v["metrics"] for v in group_outputs.values()], ignore_index=True)
+                           if group_outputs else pd.DataFrame())
+            all_metrics.to_excel(writer, sheet_name="Summary_All", index=False)
+            for group_name, bundle in group_outputs.items():
+                short = re.sub(r"[^A-Za-z0-9]", "", group_name)[:18]
+                donor = bundle["donor_means"]
+                metrics = bundle["metrics"]
+                donor_sheet = f"Reg_{short}"[:31]
+                donor.to_excel(writer, sheet_name=donor_sheet, index=False)
+                metric_display_cols = [
+                    "analyte", "n_donors", "pearson_r", "pearson_ci_95_low_fisher_z",
+                    "pearson_ci_95_high_fisher_z", "huber_slope", "huber_intercept",
+                    "huber_equation", "reference_min", "reference_max", "mhs_min",
+                    "mhs_max", "normal_min", "normal_max",
+                ]
+                metrics[[c for c in metric_display_cols if c in metrics]].to_excel(
+                    writer, sheet_name=donor_sheet, index=False, startrow=len(donor) + 3,
+                )
+                for sheet_prefix, key in [
+                    ("Metrics", "metrics"), ("Raw", "raw_clean"),
+                    ("RawMeans", "raw_with_means"), ("Outliers", "outliers"),
+                    ("ESDdiag", "diagnostics"), ("RepCounts", "replicate_counts"),
+                ]:
+                    bundle[key].to_excel(writer, sheet_name=f"{sheet_prefix}_{short}"[:31], index=False)
+            global_exclusions.to_excel(writer, sheet_name="Global_Exclusions", index=False)
+            config_df.to_excel(writer, sheet_name="Configuration", index=False)
+        return
     with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
         workbook = writer.book
         header_fmt = workbook.add_format({"bold": True, "font_color": "white", "bg_color": "#1F4E78", "border": 1, "align": "center"})
@@ -1744,6 +1788,17 @@ def export_combined_workbook(path: Path, regression_result: Mapping[str, object]
         "analyte flag TRUE": analyte_exclusions,
     }
 
+    if not _xlsxwriter_available():
+        # Degraded styling, *not* degraded science: exact same five worksheets
+        # and numerical tables, using openpyxl already installed for uploads.
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            for name, df in sheets.items():
+                df.to_excel(writer, sheet_name=name, index=False)
+                ws = writer.sheets[name]
+                ws.freeze_panes = "A2"
+                ws.auto_filter.ref = ws.dimensions
+        return
+
     with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
         wb = writer.book
         header = wb.add_format({
@@ -2097,6 +2152,14 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
         analyte = str(row["Analyte"]).strip().upper()
         if analyte not in DEFAULT_ANALYTE_CONFIG:
             raise ValueError(f"Unsupported analyte: {analyte}")
+        source_mhs = str(row["MHS column"]).strip()
+        source_ref = str(row["Reference column"]).strip()
+        if source_mhs == source_ref:
+            raise ValueError(
+                f"{analyte}: the MHS and reference columns are identical ({source_mhs}). "
+                "Select an independently measured Sysmex/reference column; "
+                "the test-device output cannot act as its own reference."
+            )
         low = float(row["Normal low"])
         high = float(row["Normal high"])
         if not np.isfinite(low) or not np.isfinite(high) or high <= low:
@@ -2107,8 +2170,8 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
             "ref": str(DEFAULT_ANALYTE_CONFIG[analyte]["ref"]),
             "normal": (low, high),
             "unit": str(row["Unit"]).strip() or str(DEFAULT_ANALYTE_CONFIG[analyte]["unit"]),
-            "source_mhs": str(row["MHS column"]),
-            "source_ref": str(row["Reference column"]),
+            "source_mhs": source_mhs,
+            "source_ref": source_ref,
             "source_flag": None if str(row.get("Flag column", "None")) in {"", "None", "<none>"} else str(row.get("Flag column")),
         }
         ac_value = _finite_or_none(row.get("AC limit %"))
@@ -2121,6 +2184,81 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
     if not runtime:
         raise ValueError("Select at least one analyte.")
     return runtime, ac, clia
+
+
+def evaluate_donor_identity_mapping(
+    preliminary: pd.DataFrame,
+    verification_donors: pd.Series | None,
+    donor_identity_mode: str,
+) -> tuple[list[str], list[str]]:
+    """Return (issues needing human confirmation, invalid mapping errors).
+
+    Multiple collection prefixes for the *same parsed D-token* do not by
+    themselves make an explicit donor column ambiguous: the explicit labels
+    can distinguish D03 from D03b.  Conversely, a donor column that varies
+    within an individual prefix+token cannot safely be accepted silently.
+    """
+    valid = preliminary.loc[preliminary["parse_ok"].fillna(False)].copy()
+    if valid.empty:
+        return [], ["No valid donor/sample IDs could be parsed."]
+
+    mode = str(donor_identity_mode).strip().lower()
+    explicit = None
+    if verification_donors is not None:
+        explicit = pd.Series(verification_donors).reset_index(drop=True).astype("string").str.strip()
+        explicit = explicit.mask(explicit.isna() | explicit.str.lower().isin(["", "nan", "none", "null"]))
+        valid["explicit"] = explicit.loc[valid.index].values
+
+    warnings: list[str] = []
+    errors: list[str] = []
+    prefix_counts = valid.groupby("parsed_donor_token")["prefix_donor_key"].nunique()
+    repeated_token = int((prefix_counts > 1).sum())
+    if mode == "explicit_column":
+        if explicit is None:
+            errors.append("Choose the explicit Donor column or a different donor identity rule.")
+        else:
+            missing_count = int(valid["explicit"].isna().sum())
+            if missing_count:
+                errors.append(
+                    f"The selected explicit Donor column is missing for {missing_count} parsed rows. "
+                    "Fill the donor labels or choose a different identity rule; "
+                    "do not silently fall back to a parsed D-token."
+                )
+            inconsistent = valid.dropna(subset=["explicit"]).groupby("prefix_donor_key")["explicit"].nunique()
+            if int((inconsistent > 1).sum()):
+                errors.append(
+                    "The same sample-prefix + parsed donor token maps to multiple explicit "
+                    "Donor labels. Resolve those inconsistencies in the uploaded data."
+                )
+    elif mode == "prefix_plus_token":
+        if explicit is not None:
+            splits = valid.dropna(subset=["explicit"]).groupby("explicit")["prefix_donor_key"].nunique()
+            if int((splits > 1).sum()):
+                warnings.append(
+                    "One or more explicit donor labels span different collection prefixes; "
+                    "prefix + D-token would split these labels into separate donors."
+                )
+        elif repeated_token:
+            warnings.append(
+                f"{repeated_token} D-token(s) recur under different collection prefixes. "
+                "Confirm that those collection-specific identities should remain separate."
+            )
+    elif mode == "parsed_token":
+        if repeated_token:
+            warnings.append(
+                f"{repeated_token} D-token(s) occur with multiple collection prefixes. "
+                "Using the token alone will merge them into a single donor."
+            )
+        if explicit is not None:
+            merged = valid.dropna(subset=["explicit"]).groupby("parsed_donor_token")["explicit"].nunique()
+            if int((merged > 1).sum()):
+                warnings.append(
+                    "One or more parsed D-tokens map to different explicit Donor labels "
+                    "(for example D03 versus D03b); token-only mode would merge them."
+                )
+    else:
+        errors.append(f"Unsupported donor identity rule: {donor_identity_mode}")
+    return warnings, errors
 
 
 def canonicalize_input_dataframe(
@@ -2172,7 +2310,10 @@ def canonicalize_input_dataframe(
         if mode == "explicit_column":
             if explicit is None:
                 raise ValueError("Explicit donor identity mode requires a donor verification column.")
-            final_donor = explicit.where(explicit.notna(), parsed["parsed_donor_token"])
+            issues, errors = evaluate_donor_identity_mapping(parsed, explicit, mode)
+            if errors:
+                raise ValueError(" ".join(errors))
+            final_donor = explicit
         elif mode == "prefix_plus_token":
             final_donor = parsed["prefix_donor_key"]
         elif mode == "parsed_token":

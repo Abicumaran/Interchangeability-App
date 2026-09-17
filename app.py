@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_BUILD = "PROXIMA V6.2 — automated single-report output"
-REQUIRED_CORE_API_VERSION = "2026-07-24-proxima-v6"
+APP_BUILD = "PROXIMA V6.3 — donor mapping and Excel-export fix"
+REQUIRED_CORE_API_VERSION = "2026-09-17-proxima-v6.3"
 
 st.set_page_config(
     page_title="PROXIMA Trueness + Bland–Altman",
@@ -38,6 +38,7 @@ _REQUIRED_CORE_SYMBOLS = [
     "canonicalize_input_dataframe",
     "collect_output_files",
     "default_analyte_table",
+    "evaluate_donor_identity_mapping",
     "normalize_bool",
     "normalize_specimen_label",
     "parse_blood_sample_id",
@@ -66,6 +67,7 @@ build_runtime_analytes = _analysis_core.build_runtime_analytes
 canonicalize_input_dataframe = _analysis_core.canonicalize_input_dataframe
 collect_output_files = _analysis_core.collect_output_files
 default_analyte_table = _analysis_core.default_analyte_table
+evaluate_donor_identity_mapping = _analysis_core.evaluate_donor_identity_mapping
 
 # User-facing analyte order mirrors the Short-Term app while preserving the
 # validated PROXIMA canonical analyte definitions and statistical engine.
@@ -259,6 +261,14 @@ sheet_name = st.selectbox("Worksheet", list(sheets), index=0)
 data = sheets[sheet_name].copy()
 columns = list(map(str, data.columns))
 data.columns = columns
+if not any(str(c).lower().endswith("_ref") for c in columns):
+    st.warning(
+        "No matched reference columns (for example PLT_ref, RBC_ref) were detected. "
+        "This looks like MHS-only raw data. A valid trueness/interchangeability analysis "
+        "requires independently measured matched reference results: upload a merged "
+        "workbook or map genuine reference columns in the analyte table below. "
+        "Do not use an MHS column as its own reference."
+    )
 
 st.success(f"Loaded {len(data):,} rows × {len(columns):,} columns from **{sheet_name}**.")
 with st.expander("Uploaded-data preview", expanded=False):
@@ -375,17 +385,29 @@ if id_mode.startswith("Parse"):
         st.error(f"Could not inspect specimen IDs: {exc}")
         st.stop()
 
-    review_needed = prefix_collision_count > 0 or explicit_conflict_count > 0
-    if review_needed:
-        st.warning(
-            f"Donor-identity review required: {prefix_collision_count} parsed D-token(s) occur under multiple "
-            f"prefix keys and {explicit_conflict_count} parsed D-token(s) map to multiple explicit donor labels."
-        )
+    review_issues, mapping_errors = evaluate_donor_identity_mapping(
+        preliminary,
+        data[verification_donor_col] if verification_donor_col is not None else None,
+        donor_identity_mode,
+    )
+    review_needed = bool(review_issues or mapping_errors)
+    if mapping_errors:
+        donor_mapping_reviewed = False
+        for problem in mapping_errors:
+            st.error("Donor mapping: " + problem)
+    elif review_issues:
+        st.warning("Donor identity needs confirmation: " + " ".join(review_issues))
         donor_mapping_reviewed = st.checkbox(
             "I reviewed the donor identity mapping below and confirm the selected donor rule",
             value=False,
+            help="Use the explicit Donor column when token-only grouping would combine distinct donors.",
         )
-    with st.expander("Verify donor identity mapping", expanded=review_needed):
+    elif prefix_collision_count or explicit_conflict_count:
+        st.success(
+            "The explicit Donor column consistently resolves repeated D-tokens and collection prefixes. "
+            "No separate confirmation is required; verify source labels in the audit if needed."
+        )
+    with st.expander("Verify donor identity mapping", expanded=review_needed or bool(prefix_collision_count or explicit_conflict_count)):
         mapping_cols = [
             c for c in ["source_sample_id", "sample_prefix", "parsed_donor_token", "prefix_donor_key",
                         "explicit_donor_value", "donor", "specimen_type", "replicate_number", "parse_ok"]
@@ -520,12 +542,16 @@ def analyte_display_name(analyte):
 selected_analytes = st.multiselect(
     "Analyte columns to run",
     options=ordered_supported,
-    default=detected or ordered_supported,
+    default=detected,
     format_func=analyte_display_name,
     help="Select exactly which analytes to run. Choices are displayed using the MHS analyte-column names and ordered like the Short-Term app.",
 )
 if not selected_analytes:
-    st.warning("Select at least one analyte.")
+    st.warning(
+        "No analyte/reference pairs were automatically identified. Select the analytes "
+        "you wish to run and map each MHS column to its actual matched reference column; "
+        "if this upload has no references, upload a merged dataset first."
+    )
     st.stop()
 
 config_df = defaults[defaults["Analyte"].isin(selected_analytes)].copy()
@@ -760,12 +786,27 @@ with st.expander("Advanced notebook constants", expanded=False):
     st.caption("The defaults exactly match the final notebook.")
 
 run_clicked = st.button("Run final PROXIMA analysis", type="primary", use_container_width=True)
+if run_clicked and not donor_mapping_reviewed:
+    st.error(
+        "Donor identity is not confirmed. In section 2, correct the mapping errors "
+        "or tick the review checkbox if the selected identity rule still needs manual confirmation."
+    )
+    st.stop()
 if run_clicked:
     try:
         runtime_analytes, ac_limits, clia_limits = build_runtime_analytes(edited_analytes.to_dict("records"))
         regression_groups, groups_to_run = parse_group_editor(group_editor, set(specimen_types))
-        if not donor_mapping_reviewed:
-            raise ValueError("Review and confirm the donor identity mapping before running the analysis.")
+        unavailable_pairs = [
+            f"{name}: MHS={cfg['source_mhs']!r}, reference={cfg['source_ref']!r}"
+            for name, cfg in runtime_analytes.items()
+            if cfg["source_mhs"] not in columns or cfg["source_ref"] not in columns
+        ]
+        if unavailable_pairs:
+            raise ValueError(
+                "The selected mappings have absent MHS/reference columns: "
+                + "; ".join(unavailable_pairs)
+                + ". Supply matched Sysmex/reference data and update the mapping in section 3."
+            )
         if run_bland_altman and ba_mode == "paired_specimens":
             if not ba_a_types or not ba_b_types:
                 raise ValueError("Select at least one specimen type in both paired Bland–Altman arms.")
@@ -927,8 +968,12 @@ if run_clicked:
                 }
             status.update(label="Analysis complete", state="complete", expanded=False)
         st.success("The final notebook-equivalent app analysis completed successfully.")
+    except ValueError as exc:
+        st.error(str(exc))
     except Exception as exc:
-        st.exception(exc)
+        st.error(f"The analysis could not complete: {exc}")
+        with st.expander("Technical traceback (for support)"):
+            st.exception(exc)
 
 
 results = st.session_state.get("proxima_final_results")

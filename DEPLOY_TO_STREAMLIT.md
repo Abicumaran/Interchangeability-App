@@ -19,3 +19,8 @@ In Streamlit Community Cloud:
 
 The app writes each run to a temporary server directory and places the complete
 results in memory for download. Uploaded data are not bundled with the source code.
+
+V6.3 critical: upload **all three** `app.py`, `analysis_core.py`, and
+`requirements.txt` together, then reboot/redeploy (clear the app cache if the
+old environment persists). `xlsxwriter>=3.2` is required for styled exports;
+openpyxl provides a lossless-table fallback when the package is unavailable.

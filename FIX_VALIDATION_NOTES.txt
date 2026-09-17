@@ -1,0 +1,43 @@
+PROXIMA Interchangeability V6.3 — 2026-09-17
+
+FIX 1 — DONOR IDENTITY:
+The app no longer blocks an internally consistent explicit Donor column simply
+because the parsed D-token repeats across prefixes. The uploaded P-007 workbook
+contains 135 rows and distinct explicit donor labels such as D03 and D03b;
+these were checked against prefix-plus-token mapping with no inconsistencies.
+Token-only merging still requires confirmation, and missing/inconsistent donor
+labels remain blocked with an actionable UI message rather than a traceback.
+
+FIX 2 — EXCEL EXPORT:
+Added xlsxwriter>=3.2 to requirements.txt. Both internal regression and the
+reportable five-tab workbook also fall back to openpyxl if xlsxwriter is absent.
+The reportable tabs are still Trueness Results; Bland-Altman Results; Outliers;
+global flag TRUE; analyte flag TRUE. The app and core use an updated shared API
+version to prevent mixing deployments from different releases.
+
+SOURCE-DATA LIMITATION:
+The supplied P-007_Capillary blood 1_PLT3_again_for analysis_2.xlsx includes
+PLT_3 and other MHS measurements, donor IDs, and flags, but zero matched
+reference *_ref columns. It cannot alone yield valid trueness or reference-
+adjusted interchangeability statistics. Merge the genuine Sysmex/reference
+results before analysis. The app now warns, does not preselect unsupported
+analyte/reference pairs, and rejects self-referencing MHS-to-MHS mappings.
+
+INTERNAL TESTS:
+* Python compilation of app.py and analysis_core.py passed.
+* Actual P-007 input: 135 rows; explicit mapping accepted; ambiguous token-only
+  mapping prompted review; missing donor labels rejected.
+* Actual input source was not used for clinical numerical validation because
+  it contains no reference results. Synthetic test-only RBC_ref values were
+  constructed IN MEMORY solely to exercise code paths, not included in the ZIP.
+* Full regression pipeline completed with the XLSXWriter engine available.
+* Full regression pipeline also completed with XLSXWriter forcibly disabled;
+  openpyxl export retained all five prescribed reportable tabs and results.
+* Neither the core statistical methods nor the underlying reference notebook
+  was changed in this maintenance release.
+
+DEPLOYMENT:
+Extract the ZIP and replace app.py, analysis_core.py and requirements.txt in
+the Streamlit repository together. Reboot/redeploy (clear stale cloud cache
+if needed) so the new dependency is installed. Existing live deployments do
+not update merely by downloading this ZIP.

@@ -18,3 +18,26 @@ Run with:
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## September 17, 2026: deployment fixes (V6.3)
+
+Replace **app.py, analysis_core.py, and requirements.txt together**, then reboot/redeploy
+Streamlit so requirements are installed. The requirements now include `xlsxwriter>=3.2`.
+If the package is still missing on a cached installation, the engine transparently
+writes the same five Excel report tabs with the already-required `openpyxl` engine;
+the main analysis is not interrupted by a missing optional formatting library.
+
+The donor review control is only mandatory when the **selected identity rule** can
+actually merge/split donors ambiguously. A complete and internally consistent
+explicit `Donor` column resolves repeated source tokens such as `D03` and `D03b`
+automatically; the identity audit remains visible. An invalid/incomplete donor
+column is never silently replaced with parsed tokens.
+
+**Input-data caveat:** `P-007_Capillary blood 1_PLT3_again_for analysis_2.xlsx`
+contains MHS analytes (including `PLT_3`) and a usable `Donor` column, but **no
+matched Sysmex/reference analyte columns** (such as `PLT_ref`). A valid trueness
+or reference-adjusted Bland–Altman analysis of those data requires a separately
+measured, matched reference dataset joined into the input workbook. The app
+warns explicitly and never fabricates reference values or treats device values
+as their own reference. You can select PLT and map its MHS column to `PLT_3`
+when its true matched reference column is supplied.
