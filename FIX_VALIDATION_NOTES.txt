@@ -12,7 +12,7 @@ FIX 2 — EXCEL EXPORT:
 Added xlsxwriter>=3.2 to requirements.txt. Both internal regression and the
 reportable five-tab workbook also fall back to openpyxl if xlsxwriter is absent.
 The reportable tabs are still Trueness Results; Bland-Altman Results; Outliers;
-global flag TRUE; analyte flag TRUE. The app and core use an updated shared API
+global flag TRUE. The app and core use an updated shared API
 version to prevent mixing deployments from different releases.
 
 SOURCE-DATA LIMITATION:

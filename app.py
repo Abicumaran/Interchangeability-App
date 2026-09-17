@@ -4,20 +4,39 @@ import io
 import inspect
 import json
 import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_BUILD = "PROXIMA V6.4 — global-flag audit and separate MHS model results"
-REQUIRED_CORE_API_VERSION = "2026-09-17-proxima-v6.4"
+APP_BUILD = "PROXIMA V6.6 — global flag only; plot downloads retained"
+REQUIRED_CORE_API_VERSION = "2026-09-17-proxima-v6.6"
 
 st.set_page_config(
     page_title="PROXIMA Trueness + Bland–Altman",
     page_icon="🧪",
     layout="wide",
 )
+
+
+def build_plot_zip(plot_mapping: dict[str, bytes], *, mode: str) -> bytes:
+    """Create a ZIP bundle of saved plot PNGs for download.
+
+    mode='panels' collects multi-panel/combined figures only.
+    mode='individual' collects single-analyte figures only.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for rel_name, payload in sorted(plot_mapping.items()):
+            rel_lower = rel_name.replace('\\', '/').lower()
+            is_panel = ('panel' in Path(rel_lower).stem) or Path(rel_lower).name.startswith('appendix_b')
+            include = is_panel if mode == 'panels' else (not is_panel)
+            if include:
+                archive.writestr(rel_name, payload)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # Import the core as a module first instead of importing many names directly.
 # This prevents the redacted Streamlit Cloud ImportError shown when app.py and
@@ -93,7 +112,7 @@ with st.expander("Method lock and interpretation", expanded=False):
     st.markdown(
         """
 - **Trueness branch:** `global_flag == FALSE` → validated generalized ESD on raw linked replicate rows → analyte-specific removal → donor means → Huber regression → Pearson *r* with Fisher-z 95% CI.
-- **Bland–Altman branch:** `global_flag == FALSE` and analyte flags → residual normality by Shapiro–Wilk → manual Grubbs `Gcrit` if normal or MAD modified-Z if non-normal → maximum one linked replicate removed per analyte → donor means.
+- **Bland–Altman branch:** `global_flag == FALSE` → residual normality by Shapiro–Wilk → manual Grubbs `Gcrit` if normal or MAD modified-Z if non-normal → maximum one linked replicate removed per analyte → donor means.
 - **Automatic outlier handling:** the validated replicate-level outlier branches are always enabled for the reportable run; trueness uses generalized ESD and Bland--Altman uses Shapiro--Wilk to route normal residuals to Grubbs and non-normal residuals to robust MAD.
 - **Donor parsing:** the app extracts the D-token, collection prefix, and optional explicit Donor column, then asks the user which identity rule to use. This prevents accidental merging when the same parsed token occurs under different prefixes or maps to labels such as `D03` and `D03b`.
 - **Bland–Altman is optional:** trueness regression runs independently. With one specimen type, the optional `REF` mode compares MHS directly with its matched Sysmex `_ref` value.
@@ -560,10 +579,9 @@ config_df = defaults[defaults["Analyte"].isin(selected_analytes)].copy()
 _selected_order = {str(a): i for i, a in enumerate(selected_analytes)}
 config_df["__order"] = config_df["Analyte"].astype(str).map(_selected_order)
 config_df = config_df.sort_values("__order").drop(columns="__order").reset_index(drop=True)
-for index, row in config_df.iterrows():
-    flag_name = str(row["Flag column"])
-    if flag_name not in columns:
-        config_df.at[index, "Flag column"] = "<none>"
+# This study uses only the global_flag quality exclusion.  Analyte-specific
+# flag mapping is intentionally not exposed or applied.
+config_df = config_df.drop(columns=["Flag column"], errors="ignore")
 
 edited_analytes = st.data_editor(
     config_df,
@@ -574,7 +592,6 @@ edited_analytes = st.data_editor(
         "Analyte": st.column_config.TextColumn(disabled=True),
         "MHS column": st.column_config.SelectboxColumn(options=columns, required=True),
         "Reference column": st.column_config.SelectboxColumn(options=columns, required=True),
-        "Flag column": st.column_config.SelectboxColumn(options=["<none>"] + columns),
         "Normal low": st.column_config.NumberColumn(format="%.6g", required=True),
         "Normal high": st.column_config.NumberColumn(format="%.6g", required=True),
         "Unit": st.column_config.TextColumn(required=True),
@@ -925,6 +942,8 @@ if run_clicked:
                 plot_files = collect_output_files(result["output_dir"], suffixes=[".png"])
                 plot_bytes = {name: read_binary(path) for name, path in plot_files.items()}
                 inventory = list(collect_output_files(result["output_dir"]).keys())
+                plot_panels_zip = build_plot_zip(plot_bytes, mode="panels")
+                plot_individual_zip = build_plot_zip(plot_bytes, mode="individual")
 
                 st.session_state["proxima_final_results"] = {
                     "zip": read_binary(result["zip_path"]),
@@ -942,7 +961,6 @@ if run_clicked:
                     "ba_donor_values": result["ba"]["donor_values"].copy(),
                     "ba_removed": result["ba"]["removed_outliers"].copy(),
                     "ba_audit": result["ba"]["outlier_audit"].copy(),
-                    "ba_analyte_flags": result["ba"]["analyte_flag_exclusions"].copy(),
                     "global_exclusions": result["ba"]["global_exclusions"].copy(),
                     "criteria": result["ba"]["criteria"].copy(),
                     "ba_enabled": bool(result["ba"].get("ba_enabled", run_bland_altman)),
@@ -952,6 +970,8 @@ if run_clicked:
                     "selection_exclusions": result["selection_exclusions"].copy(),
                     "ba_pairing_audit": result["ba_pairing_audit"].copy(),
                     "plots": plot_bytes,
+                    "plot_panels_zip": plot_panels_zip,
+                    "plot_individual_zip": plot_individual_zip,
                     "inventory": inventory,
                     "input_rows": len(result["canonical_selected"]),
                     "global_false_rows": int(result["canonical_selected"]["global_flag"].map(normalize_bool).eq(False).sum()),
@@ -1070,8 +1090,6 @@ with audit_tab:
             st.dataframe(results["ba_audit"], use_container_width=True, hide_index=True)
         with st.expander("Global-flag and unparsed exclusions"):
             st.dataframe(results["global_exclusions"], use_container_width=True, hide_index=True)
-        with st.expander("Analyte-specific flag exclusions"):
-            st.dataframe(results["ba_analyte_flags"], use_container_width=True, hide_index=True)
     else:
         st.info("Bland–Altman was disabled, so no BA-specific outlier or analyte-flag audit was generated.")
 
@@ -1121,6 +1139,23 @@ with download_tab:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+    plot_dl1, plot_dl2 = st.columns(2)
+    with plot_dl1:
+        st.download_button(
+            "Download combined plot panels (ZIP)",
+            data=results["plot_panels_zip"],
+            file_name="PROXIMA_plot_panels.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+    with plot_dl2:
+        st.download_button(
+            "Download individual plots (ZIP)",
+            data=results["plot_individual_zip"],
+            file_name="PROXIMA_individual_plots.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
 
 if st.button("Clear stored results"):
     st.session_state.pop("proxima_final_results", None)

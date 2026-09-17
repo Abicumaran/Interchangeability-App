@@ -6,7 +6,6 @@ Primary expected replicate-level structure:
 - global_flag
 - MHS analyte columns
 - matched Sysmex columns ending in _ref
-- optional analyte flag columns ending in _flag
 
 The app also allows explicit donor, specimen-type and replicate columns and can
 synthesize the canonical bloodSampleId internally.

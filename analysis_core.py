@@ -5,14 +5,14 @@ The implementation is derived directly from the validated notebook
 
 The two outlier branches remain deliberately separate:
 1. Trueness regression: validated generalized ESD on raw replicate rows.
-2. Paired-specimen Bland–Altman: global/analyte flags, Shapiro–Wilk,
+2. Paired-specimen Bland–Altman: global flag, Shapiro–Wilk,
    manual Grubbs Gcrit if normal, or MAD modified-Z if non-normal,
    with at most one linked replicate removed per analyte before donor averaging.
 """
 
 from __future__ import annotations
 
-CORE_API_VERSION = "2026-09-17-proxima-v6.4"
+CORE_API_VERSION = "2026-09-17-proxima-v6.6"
 
 import json
 import importlib.util
@@ -1290,7 +1290,7 @@ def build_ba_filtered_replicates(
     analytes: Mapping[str, Mapping[str, object]] = ANALYTES,
     apply_outlier_removal: bool = True,
 ) -> dict[str, object]:
-    """Global/analyte flag filtering and one analyte-level raw-replicate outlier."""
+    """Global-flag filtering and one analyte-level raw-replicate outlier."""
     work = df.copy().reset_index(drop=True)
     work["_row_id"] = np.arange(len(work), dtype=int)
     global_keep = work["global_flag_bool"].eq(False) & work["parse_ok"]
@@ -1306,24 +1306,15 @@ def build_ba_filtered_replicates(
     filtered_by_analyte: dict[str, pd.DataFrame] = {}
     audit_rows: list[dict[str, object]] = []
     removed_rows: list[dict[str, object]] = []
+    # The validated app uses only the study-level global_flag.
+    # Columns that merely end in ``_flag`` are not exclusion criteria and must
+    # never remove analyte rows.  Keep an empty compatibility table internally
+    # so older callers do not break, but it is not exported or displayed.
     analyte_flag_exclusions: list[dict[str, object]] = []
 
     for analyte, cfg in analytes.items():
         mhs_col, ref_col = str(cfg["mhs"]), str(cfg["ref"])
-        flag_col = f"{analyte}_flag" if f"{analyte}_flag" in base.columns else None
         candidate = base.copy()
-        if flag_col:
-            flag_keep = _flag_is_false(candidate[flag_col])
-            excluded = candidate.loc[~flag_keep].copy()
-            for _, row in excluded.iterrows():
-                analyte_flag_exclusions.append({
-                    "analyte": analyte, "flag_column": flag_col,
-                    "batch_id": row.get("batch_id"), "bloodSampleId": row.get("bloodSampleId"),
-                    "donor": row.get("donor"), "specimen_type": row.get("specimen_type"),
-                    "replicate_number": row.get("replicate_number"), "flag_value": row.get(flag_col),
-                    "exclusion_reason": "analyte-specific flag was not FALSE",
-                })
-            candidate = candidate.loc[flag_keep].copy()
         candidate = candidate.dropna(subset=[mhs_col, ref_col]).copy()
         candidate = candidate[candidate[ref_col] != 0].copy()
         candidate["residual_pct"] = 100.0 * (candidate[mhs_col] - candidate[ref_col]) / candidate[ref_col]
@@ -1786,18 +1777,15 @@ def export_combined_workbook(path: Path, regression_result: Mapping[str, object]
             selected_input["global_flag"].map(normalize_bool).eq(True)
         ].copy()
         global_exclusions["exclusion_reason"] = "global_flag = TRUE"
-    analyte_exclusions = ba_bundle.get("analyte_flag_exclusions", pd.DataFrame()).copy()
-
     sheets = {
         "Trueness Results": reg_metrics,
         "Bland-Altman Results": ba_report,
         "Outliers": outliers,
         "global flag TRUE": global_exclusions,
-        "analyte flag TRUE": analyte_exclusions,
     }
 
     if not _xlsxwriter_available():
-        # Degraded styling, *not* degraded science: exact same five worksheets
+        # Degraded styling, *not* degraded science: exact same four worksheets
         # and numerical tables, using openpyxl already installed for uploads.
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             for name, df in sheets.items():
@@ -1873,7 +1861,7 @@ def run_ba_pipeline(
         "BA_PERCENT_RESULTS.csv":bundle["percent_results"],"BA_NATIVE_RESULTS.csv":bundle["native_results"],
         "BA_PERCENT_NATIVE_CONTEXT.csv":bundle["combined_context"],"BA_DONOR_VALUES.csv":bundle["donor_values"],
         "BA_DONOR_MEANS.csv":bundle["donor_means"],"BA_OUTLIER_AUDIT.csv":bundle["outlier_audit"],
-        "BA_REMOVED_OUTLIERS.csv":bundle["removed_outliers"],"BA_ANALYTE_FLAG_EXCLUSIONS.csv":bundle["analyte_flag_exclusions"],
+        "BA_REMOVED_OUTLIERS.csv":bundle["removed_outliers"],
         "GLOBAL_FLAG_EXCLUSIONS.csv":bundle["global_exclusions"],"BA_DONOR_PROFILE_DATA.csv":bundle["profile_records"],
         "AC_CLIA_ACCEPTANCE_CRITERIA_REVIEW.csv":criteria_df,
     }
@@ -1886,7 +1874,7 @@ def run_ba_pipeline(
             + (
                 "Outlier screening is on raw linked replicate residuals before donor averaging: Shapiro-Wilk; Grubbs with manually computed Gcrit if normal; MAD modified Z if non-normal; maximum one replicate per analyte.\n"
                 if apply_outlier_removal else
-                "Outlier removal was disabled by the user; all globally/analyte-flag eligible replicate rows were retained before donor averaging.\n"
+                "Outlier removal was disabled by the user; all global_flag-eligible replicate rows were retained before donor averaging.\n"
             )
         )
     return bundle
@@ -2069,7 +2057,6 @@ def run_reference_ba_pipeline(
         "BA_DONOR_MEANS.csv": bundle["donor_means"],
         "BA_OUTLIER_AUDIT.csv": bundle["outlier_audit"],
         "BA_REMOVED_OUTLIERS.csv": bundle["removed_outliers"],
-        "BA_ANALYTE_FLAG_EXCLUSIONS.csv": bundle["analyte_flag_exclusions"],
         "GLOBAL_FLAG_EXCLUSIONS.csv": bundle["global_exclusions"],
         "AC_CLIA_ACCEPTANCE_CRITERIA_REVIEW.csv": criteria_df,
     }
@@ -2082,7 +2069,7 @@ def run_reference_ba_pipeline(
             + (
                 "Outlier screening is on raw linked replicate residuals before donor averaging: Shapiro-Wilk; manual Grubbs Gcrit if normal; MAD modified Z if non-normal; maximum one replicate per analyte.\n"
                 if apply_outlier_removal else
-                "Outlier removal was disabled by the user; global and analyte-specific flag filters still apply.\n"
+                "Outlier removal was disabled by the user; the global_flag filter still applies.\n"
             )
         )
     return bundle
