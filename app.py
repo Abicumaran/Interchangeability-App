@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_BUILD = "PROXIMA V6.3 — donor mapping and Excel-export fix"
-REQUIRED_CORE_API_VERSION = "2026-09-17-proxima-v6.3"
+APP_BUILD = "PROXIMA V6.4 — global-flag audit and separate MHS model results"
+REQUIRED_CORE_API_VERSION = "2026-09-17-proxima-v6.4"
 
 st.set_page_config(
     page_title="PROXIMA Trueness + Bland–Altman",
@@ -517,15 +517,17 @@ if global_choice != "<no column>":
     )
 
 st.header("3. Analytes, mappings, ranges, and acceptance criteria")
-defaults = default_analyte_table()
+defaults = default_analyte_table(available_columns=columns)
 
-# Reorder the supported canonical analytes by their MHS/source column so the
-# selector follows the same sequence as the Short-Term app. Extra model columns
-# (for example PLT_3) remain outside this selector unless they are part of the
-# validated PROXIMA core; this change is UI-only and does not alter the method.
+# Select source MHS models independently. PLT, PLT_2, PLT_3 (and analogous
+# MCV/RDW variants) each retain their own identity and result row, while the
+# editor may assign the same genuine Sysmex reference column to all models.
 source_to_analyte = {str(row["MHS column"]): str(row["Analyte"]) for _, row in defaults.iterrows()}
 ordered_supported = [source_to_analyte[c] for c in SHORT_TERM_ANALYTE_COLUMN_ORDER if c in source_to_analyte]
-ordered_supported += [str(a) for a in DEFAULT_ANALYTE_CONFIG if str(a) not in ordered_supported]
+ordered_supported += [
+    str(row["Analyte"]) for _, row in defaults.iterrows()
+    if str(row["Analyte"]) not in ordered_supported
+]
 
 detected = []
 for analyte in ordered_supported:
@@ -544,7 +546,7 @@ selected_analytes = st.multiselect(
     options=ordered_supported,
     default=detected,
     format_func=analyte_display_name,
-    help="Select exactly which analytes to run. Choices are displayed using the MHS analyte-column names and ordered like the Short-Term app.",
+    help="Select each MHS model separately (for example PLT_2 and PLT_3). Shared reference columns are supported.",
 )
 if not selected_analytes:
     st.warning(

@@ -4,7 +4,7 @@ https://interchangeability-app.streamlit.app/
 
 This build keeps the validated trueness and Bland–Altman engine while simplifying the reportable workflow.
 
-- Select exactly which supported analytes to run, displayed in the same suggested MHS-column order as the Short-Term app.
+- Select MHS model columns independently (e.g. PLT_2, PLT_3, RDW_2); model variants share a genuine reference column when appropriate and generate separate result rows.
 - Global-flag and analyte-specific flag exclusions are applied before reportable analysis and retained in dedicated audit sheets.
 - Validated replicate-level outlier handling is always enabled for the reportable run: trueness uses generalized ESD; Bland–Altman uses Shapiro-Wilk → Grubbs when normal or robust MAD when non-normal.
 - Trueness remains Huber regression with Pearson/Fisher-z reporting.
@@ -39,5 +39,20 @@ matched Sysmex/reference analyte columns** (such as `PLT_ref`). A valid trueness
 or reference-adjusted Bland–Altman analysis of those data requires a separately
 measured, matched reference dataset joined into the input workbook. The app
 warns explicitly and never fabricates reference values or treats device values
-as their own reference. You can select PLT and map its MHS column to `PLT_3`
-when its true matched reference column is supplied.
+as their own reference. After merging the genuine reference data, select `PLT_3` directly to obtain its own results, independently of `PLT` or `PLT_2`.
+
+
+## September 17, 2026: final two Excel-output fixes (V6.4)
+
+1. The `global flag TRUE` worksheet now lists the actual selected input rows with
+   `global_flag = TRUE`, with an explicit exclusion reason. It is populated even
+   when Bland–Altman is disabled or when flags occur outside the BA arm.
+   No flagged rows are included in the reportable analyses.
+2. The `analyte` field in both `Trueness Results` and `Bland-Altman Results`
+   reports the **selected source MHS model column**, e.g. `PLT_2`, `PLT_3`,
+   `RDW_2`. Model variants are analyzed independently, can share the same genuine
+   reference column, and are never merged into one generic `PLT` output row.
+
+All other statistical analysis branches and reportable workbook tabs are
+unchanged. Deploy `app.py` and `analysis_core.py` together (the supplied
+`requirements.txt` is unchanged from V6.3).

@@ -24,3 +24,5 @@ V6.3 critical: upload **all three** `app.py`, `analysis_core.py`, and
 `requirements.txt` together, then reboot/redeploy (clear the app cache if the
 old environment persists). `xlsxwriter>=3.2` is required for styled exports;
 openpyxl provides a lossless-table fallback when the package is unavailable.
+
+V6.4: replace app.py and analysis_core.py as a pair to activate the flagged-row worksheet and model-specific Excel result labels. Other files, including requirements.txt, retain their V6.3 settings.

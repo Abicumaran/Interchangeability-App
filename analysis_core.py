@@ -12,7 +12,7 @@ The two outlier branches remain deliberately separate:
 
 from __future__ import annotations
 
-CORE_API_VERSION = "2026-09-17-proxima-v6.3"
+CORE_API_VERSION = "2026-09-17-proxima-v6.4"
 
 import json
 import importlib.util
@@ -1720,7 +1720,7 @@ def save_standard_bland_altman_plots(donor_values: pd.DataFrame, combined: pd.Da
     return paths
 
 
-def export_combined_workbook(path: Path, regression_result: Mapping[str, object], ba_bundle: Mapping[str, object], criteria_df: pd.DataFrame) -> None:
+def export_combined_workbook(path: Path, regression_result: Mapping[str, object], ba_bundle: Mapping[str, object], criteria_df: pd.DataFrame, *, selected_input: pd.DataFrame | None = None) -> None:
     """Write the single cleaned, reportable Excel workbook.
 
     The statistical engine may calculate additional diagnostics internally, but
@@ -1778,6 +1778,14 @@ def export_combined_workbook(path: Path, regression_result: Mapping[str, object]
     outliers = pd.concat(outlier_parts, ignore_index=True, sort=False) if outlier_parts else pd.DataFrame()
 
     global_exclusions = ba_bundle.get("global_exclusions", pd.DataFrame()).copy()
+    if selected_input is not None:
+        # This audit is generated from the actual selected input, not from the
+        # optional BA branch. It remains populated when Bland-Altman is off.
+        # The tab named global flag TRUE includes only genuinely TRUE values.
+        global_exclusions = selected_input.loc[
+            selected_input["global_flag"].map(normalize_bool).eq(True)
+        ].copy()
+        global_exclusions["exclusion_reason"] = "global_flag = TRUE"
     analyte_exclusions = ba_bundle.get("analyte_flag_exclusions", pd.DataFrame()).copy()
 
     sheets = {
@@ -2117,8 +2125,13 @@ DEFAULT_CLIA_LIMIT_PCT = copy.deepcopy(CLIA_LIMIT_PCT)
 _RUNTIME_LOCK = threading.RLock()
 
 
-def default_analyte_table() -> pd.DataFrame:
-    """Return the notebook defaults as an editable app configuration table."""
+def default_analyte_table(available_columns: Sequence[str] | None = None) -> pd.DataFrame:
+    """Editable defaults; when columns are supplied, expose distinct MHS model variants.
+
+    Each model (e.g. PLT_2 and PLT_3) inherits the validated base analyte's
+    range/criteria but has its *own* analysis identity and can share PLT_ref.
+    Without available_columns, return the original V6.3 base table for callers.
+    """
     rows = []
     for analyte, cfg in DEFAULT_ANALYTE_CONFIG.items():
         rows.append({
@@ -2132,7 +2145,29 @@ def default_analyte_table() -> pd.DataFrame:
             "AC limit %": float(DEFAULT_AC_LIMIT_PCT.get(analyte, np.nan)),
             "CLIA limit %": float(DEFAULT_CLIA_LIMIT_PCT.get(analyte, np.nan)),
         })
-    return pd.DataFrame(rows)
+    if available_columns is None:
+        return pd.DataFrame(rows)
+    available = set(map(str, available_columns))
+    expanded = []
+    for row in rows:
+        base = str(row["Analyte"])
+        default_mhs = str(row["MHS column"])
+        candidates = [default_mhs] + sorted(
+            (col for col in available
+             if re.fullmatch(re.escape(base) + r"_\d+", col)
+             and col != default_mhs),
+            key=lambda name: (int(name.rsplit("_", 1)[1]), name),
+        )
+        for model in candidates:
+            item = row.copy()
+            item["Analyte"] = model
+            item["MHS column"] = model
+            # Use model-specific flags if supplied; otherwise preserve the base
+            # analyte's original flag selection (or the app's <none> setting).
+            if f"{model}_flag" in available:
+                item["Flag column"] = f"{model}_flag"
+            expanded.append(item)
+    return pd.DataFrame(expanded)
 
 
 def _finite_or_none(value: object) -> float | None:
@@ -2150,10 +2185,19 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
     clia: dict[str, float] = {}
     for row in config_rows:
         analyte = str(row["Analyte"]).strip().upper()
-        if analyte not in DEFAULT_ANALYTE_CONFIG:
-            raise ValueError(f"Unsupported analyte: {analyte}")
         source_mhs = str(row["MHS column"]).strip()
         source_ref = str(row["Reference column"]).strip()
+        model_match = re.fullmatch(r"([A-Z]+)_\d+", analyte)
+        base_analyte = model_match.group(1) if model_match else analyte
+        if base_analyte not in DEFAULT_ANALYTE_CONFIG:
+            raise ValueError(f"Unsupported analyte: {analyte}")
+        if not source_mhs:
+            raise ValueError(f"{analyte}: choose a non-empty MHS column.")
+        if source_mhs in runtime:
+            raise ValueError(
+                f"MHS column {source_mhs!r} was selected more than once. "
+                "Select each model only once to avoid overwriting a model's results."
+            )
         if source_mhs == source_ref:
             raise ValueError(
                 f"{analyte}: the MHS and reference columns are identical ({source_mhs}). "
@@ -2164,12 +2208,20 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
         high = float(row["Normal high"])
         if not np.isfinite(low) or not np.isfinite(high) or high <= low:
             raise ValueError(f"{analyte}: normal high must be greater than normal low.")
-        runtime[analyte] = {
-            # Internal canonical output names remain identical to the notebook.
-            "mhs": str(DEFAULT_ANALYTE_CONFIG[analyte]["mhs"]),
-            "ref": str(DEFAULT_ANALYTE_CONFIG[analyte]["ref"]),
+        # The actual MHS column is the analysis identity and reported analyte
+        # label, so PLT_2 and PLT_3 never collapse into one PLT result.
+        # Give alternate models separate internal reference columns even when
+        # their original measurements share one genuine Sysmex PLT_ref.
+        default_cfg = DEFAULT_ANALYTE_CONFIG[base_analyte]
+        internal_ref = (
+            str(default_cfg["ref"]) if source_mhs == str(default_cfg["mhs"])
+            else f"{source_mhs}_ref"
+        )
+        runtime[source_mhs] = {
+            "mhs": source_mhs,
+            "ref": internal_ref,
             "normal": (low, high),
-            "unit": str(row["Unit"]).strip() or str(DEFAULT_ANALYTE_CONFIG[analyte]["unit"]),
+            "unit": str(row["Unit"]).strip() or str(default_cfg["unit"]),
             "source_mhs": source_mhs,
             "source_ref": source_ref,
             "source_flag": None if str(row.get("Flag column", "None")) in {"", "None", "<none>"} else str(row.get("Flag column")),
@@ -2178,9 +2230,9 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
         clia_value = _finite_or_none(row.get("CLIA limit %"))
         if ac_value is None or ac_value <= 0:
             raise ValueError(f"{analyte}: AC limit must be a positive percentage.")
-        ac[analyte] = ac_value
+        ac[source_mhs] = ac_value
         if clia_value is not None and clia_value > 0:
-            clia[analyte] = clia_value
+            clia[source_mhs] = clia_value
     if not runtime:
         raise ValueError("Select at least one analyte.")
     return runtime, ac, clia
@@ -2353,25 +2405,27 @@ def canonicalize_input_dataframe(
         out["prefix_donor_key"] = donor_text
         out["donor_identity_mode"] = "explicit_columns"
 
-    # Copy mapped analyte columns to the canonical names used by the notebook.
+    # Snapshot source values before generating any model-specific internal
+    # aliases: shared references must not be overwritten while processing rows.
+    original = out.copy()
     for analyte, cfg in runtime_analytes.items():
         source_mhs = str(cfg["source_mhs"])
         source_ref = str(cfg["source_ref"])
-        if source_mhs not in out.columns:
+        if source_mhs not in original.columns:
             raise ValueError(f"{analyte}: MHS column not found: {source_mhs}")
-        if source_ref not in out.columns:
+        if source_ref not in original.columns:
             raise ValueError(f"{analyte}: reference column not found: {source_ref}")
-        out[str(cfg["mhs"])] = out[source_mhs]
-        out[str(cfg["ref"])] = out[source_ref]
+        out[str(cfg["mhs"])] = original[source_mhs]
+        out[str(cfg["ref"])] = original[source_ref]
         canonical_flag = f"{analyte}_flag"
         source_flag = cfg.get("source_flag")
         if source_flag is None:
             if canonical_flag in out.columns:
                 out = out.drop(columns=[canonical_flag])
         else:
-            if str(source_flag) not in out.columns:
+            if str(source_flag) not in original.columns:
                 raise ValueError(f"{analyte}: flag column not found: {source_flag}")
-            out[canonical_flag] = out[str(source_flag)]
+            out[canonical_flag] = original[str(source_flag)]
 
     return out
 
@@ -2696,7 +2750,10 @@ def run_complete_notebook_pipeline(
             )
 
         combined_xlsx = output_dir / "PROXIMA_Trueness_and_BlandAltman_Output.xlsx"
-        export_combined_workbook(combined_xlsx, regression_result, ba_result, ba_result["criteria"])
+        export_combined_workbook(
+            combined_xlsx, regression_result, ba_result, ba_result["criteria"],
+            selected_input=canonical_selected,
+        )
 
         main_cols = [
             "analyte", "unit", "method", "method_description", "n",

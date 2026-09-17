@@ -1,0 +1,15 @@
+PROXIMA Interchangeability V6.4 — Excel output only — 2026-09-17
+
+FIX 1: The existing `global flag TRUE` worksheet is now built directly from the selected uploaded rows where global_flag normalizes to TRUE. It contains identifying columns and exclusion_reason; it works regardless of whether Bland–Altman was run. Missing/unparseable flags remain excluded from analysis, but are not incorrectly labeled TRUE in that worksheet.
+
+FIX 2: Result rows use actual selected MHS source-model names (PLT_2, PLT_3, RDW_2, etc.) as their analyte identities. Independent models remain separate through statistical calculations and export. A shared genuine reference (e.g. PLT_ref) is read independently for each model without overwriting measurements. Duplicate selection of the same physical MHS column now raises a clear error instead of silently overwriting results.
+
+UNCHANGED: Donor review, both validated outlier branches, trueness Huber regression, reportable BA choice M11/REF, five workbook tabs, export engines, dependencies, and all other methods. app.py and analysis_core.py have matching V6.4 API versions.
+
+INTERNAL CHECKS:
+* Both Python sources compile.
+* Actual P-007 135-row MHS structure: PLT/PLT_2/PLT_3, MCV_2, RDW_2 correctly discovered.
+* Software smoke test using actual P-007 MHS data with synthetic TEST-ONLY reference values: full trueness + REF BA exported separate PLT_2 and PLT_3 numerical results; injected TRUE flag exported in its dedicated worksheet.
+* BA-disabled, openpyxl-fallback test: both models remain separate and the TRUE-flag tab remains populated.
+* Additional 5-donor synthetic paired-specimen test: full paired pipeline exported distinct PLT_2 and PLT_3 M11 results (reduced bootstrap iterations for smoke-test speed only; release defaults unchanged).
+* No clinical numerical validation on P-007 alone: it has no genuine matched reference measurements. Supply matched reference values for scientific analysis; no synthetic reference is shipped in this ZIP.
