@@ -41,6 +41,67 @@ def _xlsxwriter_available() -> bool:
     return importlib.util.find_spec("xlsxwriter") is not None
 
 
+ANALYTE_ORDER = ['RBC', 'WBC_2_C', 'PLT_3_C', 'HCT_2', 'HGB', 'MCV_3', 'RDW_3',
+                 'MCH', 'MCHC', 'NEUT_2', 'LYMPH_2', 'MXD_2']
+FALLBACKS = {'WBC_2_C': ['WBC_2', 'WBC'], 'PLT_3_C': ['PLT_3', 'PLT'],
+             'HCT_2': ['HCT'], 'MCV_3': ['MCV'], 'RDW_3': ['RDW'],
+             'NEUT_2': ['NEU_2', 'NEUT', 'NEU'],
+             'LYMPH_2': ['LYMPH'], 'MXD_2': ['MXD']}
+
+def default_analytes(columns):
+    columns = set(columns)
+    return [next(c for c in [a] + FALLBACKS.get(a, []) if c in columns)
+            for a in ANALYTE_ORDER if any(c in columns for c in [a] + FALLBACKS.get(a, []))]
+
+
+def analyte_reference_column(column, columns):
+    """Suggest an existing reference, preferring an exact model-specific match."""
+    references = {str(c)[:-4].upper(): str(c) for c in columns
+                  if str(c).lower().endswith('_ref')}
+    name = str(column).upper()
+    if name in references:
+        return references[name]
+    matches = [base for base in references if name.startswith(base + '_')]
+    if matches:
+        return references[max(matches, key=len)]
+    # Both NEU and NEUT are used for neutrophils in existing input files.
+    for source, target in [('NEU', 'NEUT'), ('NEUT', 'NEU')]:
+        if (name == source or name.startswith(source + '_')) and target in references:
+            return references[target]
+    return None
+
+
+def detected_analyte_columns(df):
+    """Detect result columns, excluding identifiers, references and QC metadata."""
+    metadata = {
+        'batchid', 'originalbatchid', 'mbctestrecordid', 'sbctestrecordid',
+        'bloodsampleid', 'sampleid', 'donor', 'type', 'specimentype',
+        'level', 'condition', 'day', 'replicate', 'device', 'deviceid',
+        'serialnumber', 'devicealias', 'patientuserid', 'testkitid',
+        'collection', 'reprocessno', 'processed', 'numvalidimg',
+        'dilutioncorrectionfactor', 'referencematchcount', 'referencesource',
+        'ingestiondate', 'globalflag', 'flagcomments',
+    }
+    detected = []
+    for column in df.columns:
+        name = str(column)
+        lower = name.lower()
+        compact = re.sub(r'[^a-z0-9]', '', lower)
+        if (compact in metadata or lower.endswith(('_ref', '_flag'))
+                or lower.startswith(('div_', 'rule_', 'unnamed:'))
+                or re.search(r'(?:^|_)(?:flag|id|date|time|timestamp)(?:_|$)', lower)):
+            continue
+        values = df[column]
+        if (pd.api.types.is_bool_dtype(values)
+                or pd.api.types.is_datetime64_any_dtype(values)):
+            continue
+        if (analyte_reference_column(name, df.columns) is not None
+                or pd.to_numeric(values, errors='coerce').notna().any()):
+            detected.append(name)
+    preferred = default_analytes(detected)
+    return preferred + [c for c in detected if c not in preferred]
+
+
 ANALYTES: dict[str, dict[str, object]] = {
     "RBC":   {"mhs": "RBC",     "ref": "RBC_ref",   "normal": (3.85, 5.65),   "unit": "10^12/L"},
     "WBC":   {"mhs": "WBC_2",   "ref": "WBC_ref",   "normal": (3.60, 10.50),  "unit": "10^9/L"},
@@ -2112,8 +2173,8 @@ DEFAULT_CLIA_LIMIT_PCT = copy.deepcopy(CLIA_LIMIT_PCT)
 _RUNTIME_LOCK = threading.RLock()
 
 
-def default_analyte_table(available_columns: Sequence[str] | None = None) -> pd.DataFrame:
-    """Editable defaults; when columns are supplied, expose distinct MHS model variants.
+def default_analyte_table(available_columns: Sequence[str] | None = None, data: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Editable input mappings for detected analytes and distinct MHS model variants.
 
     Each model (e.g. PLT_2 and PLT_3) inherits the validated base analyte's
     range/criteria but has its *own* analysis identity and can share PLT_ref.
@@ -2134,27 +2195,24 @@ def default_analyte_table(available_columns: Sequence[str] | None = None) -> pd.
         })
     if available_columns is None:
         return pd.DataFrame(rows)
-    available = set(map(str, available_columns))
+    source = data if data is not None else pd.DataFrame(columns=list(available_columns))
+    templates = {str(row["Analyte"]): row for row in rows}
     expanded = []
-    for row in rows:
-        base = str(row["Analyte"])
-        default_mhs = str(row["MHS column"])
-        candidates = [default_mhs] + sorted(
-            (col for col in available
-             if re.fullmatch(re.escape(base) + r"_\d+", col)
-             and col != default_mhs),
-            key=lambda name: (int(name.rsplit("_", 1)[1]), name),
-        )
-        for model in candidates:
-            item = row.copy()
-            item["Analyte"] = model
-            item["MHS column"] = model
-            # Use model-specific flags if supplied; otherwise preserve the base
-            # analyte's original flag selection (or the app's <none> setting).
-            if f"{model}_flag" in available:
-                item["Flag column"] = f"{model}_flag"
-            expanded.append(item)
-    return pd.DataFrame(expanded)
+    for model in detected_analyte_columns(source):
+        name = model.upper()
+        if name == "NEU" or name.startswith("NEU_"):
+            name = "NEUT" + name[3:]
+        base = next((a for a in templates if name == a or name.startswith(a + "_")), None)
+        item = templates[base].copy() if base is not None else {
+            "Normal low": np.nan, "Normal high": np.nan, "Unit": "",
+            "AC limit %": np.nan, "CLIA limit %": np.nan,
+        }
+        item["Analyte"] = model
+        item["MHS column"] = model
+        item["Reference column"] = analyte_reference_column(model, available_columns) or ""
+        item["Flag column"] = f"{model}_flag" if f"{model}_flag" in available_columns else item.get("Flag column", "<none>")
+        expanded.append(item)
+    return pd.DataFrame(expanded, columns=list(rows[0]))
 
 
 def _finite_or_none(value: object) -> float | None:
@@ -2174,10 +2232,9 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
         analyte = str(row["Analyte"]).strip().upper()
         source_mhs = str(row["MHS column"]).strip()
         source_ref = str(row["Reference column"]).strip()
-        model_match = re.fullmatch(r"([A-Z]+)_\d+", analyte)
-        base_analyte = model_match.group(1) if model_match else analyte
-        if base_analyte not in DEFAULT_ANALYTE_CONFIG:
-            raise ValueError(f"Unsupported analyte: {analyte}")
+        family = "NEUT" + analyte[3:] if analyte == "NEU" or analyte.startswith("NEU_") else analyte
+        base_analyte = next((a for a in DEFAULT_ANALYTE_CONFIG
+                             if family == a or family.startswith(a + "_")), family)
         if not source_mhs:
             raise ValueError(f"{analyte}: choose a non-empty MHS column.")
         if source_mhs in runtime:
@@ -2199,16 +2256,31 @@ def build_runtime_analytes(config_rows: Sequence[Mapping[str, object]]) -> tuple
         # label, so PLT_2 and PLT_3 never collapse into one PLT result.
         # Give alternate models separate internal reference columns even when
         # their original measurements share one genuine Sysmex PLT_ref.
-        default_cfg = DEFAULT_ANALYTE_CONFIG[base_analyte]
+        default_cfg = DEFAULT_ANALYTE_CONFIG.get(base_analyte, {
+            "mhs": source_mhs, "ref": f"{source_mhs}_ref", "unit": "",
+        })
+        unit = "" if pd.isna(row.get("Unit")) else str(row.get("Unit", "")).strip()
+        if not unit and not default_cfg["unit"]:
+            raise ValueError(f"{analyte}: enter the unit for this new analyte.")
         internal_ref = (
             str(default_cfg["ref"]) if source_mhs == str(default_cfg["mhs"])
             else f"{source_mhs}_ref"
         )
+        # A base-named extra model (e.g. PLT) must not reuse the default
+        # model's internal PLT_ref column when both are selected together.
+        selected_sources = {str(row["MHS column"]).strip() for row in config_rows}
+        reserved_refs = {str(cfg["ref"]) for cfg in DEFAULT_ANALYTE_CONFIG.values()
+                         if str(cfg["mhs"]) in selected_sources}
+        if source_mhs != str(default_cfg["mhs"]) and internal_ref in reserved_refs:
+            internal_ref = f"{source_mhs}__ref"
+        used_refs = {str(cfg["ref"]) for cfg in runtime.values()}
+        while internal_ref in used_refs:
+            internal_ref += "_"
         runtime[source_mhs] = {
             "mhs": source_mhs,
             "ref": internal_ref,
             "normal": (low, high),
-            "unit": str(row["Unit"]).strip() or str(default_cfg["unit"]),
+            "unit": unit or str(default_cfg["unit"]),
             "source_mhs": source_mhs,
             "source_ref": source_ref,
             "source_flag": None if str(row.get("Flag column", "None")) in {"", "None", "<none>"} else str(row.get("Flag column")),
